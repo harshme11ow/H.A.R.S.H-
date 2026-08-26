@@ -62,7 +62,7 @@ void loop() {
     }
     
     case STATE_COOLANT: {
-      float tempCoolant = myELM327.engineCoolantTemp();
+      float tempCoolant = myELM327.throttle(); // Returns a percentage from 0-100%
       
       if (myELM327.nb_rx_state == ELM_SUCCESS) {
         DEBUG_PORT.print("Coolant Temp (C): ");
