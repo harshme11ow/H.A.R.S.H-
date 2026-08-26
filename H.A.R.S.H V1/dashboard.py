@@ -13,9 +13,9 @@ class OBDDashboard(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Honda Accord Telemetry")
-        self.resize(550, 400)
+        self.resize(550, 420) # Made the window slightly taller for the status bar
         
-        # Dark mode styling for the window and the progress bars
+        # Dark mode styling 
         self.setStyleSheet("""
             QMainWindow { background-color: #121212; color: #00E676; }
             QLabel { color: #00E676; }
@@ -71,22 +71,29 @@ class OBDDashboard(QMainWindow):
         self.volt_text.setFixedWidth(180)
         
         self.volt_bar = QProgressBar()
-        # Scale 10.0V - 15.0V to integers 100 - 150 for smooth rendering
         self.volt_bar.setRange(100, 150) 
         self.volt_bar.setValue(100)
         self.volt_bar.setFixedHeight(30)
-        self.volt_bar.setFormat("%v V") # We will override this text manually
+        self.volt_bar.setFormat("%v V") 
         
         volt_layout.addWidget(self.volt_text)
         volt_layout.addWidget(self.volt_bar)
         main_layout.addLayout(volt_layout)
         
+        # --- STATUS INDICATOR ---
+        self.status_label = QLabel("⚪ Waiting for ESP32...")
+        self.status_label.setFont(QFont("Consolas", 12, QFont.Bold))
+        self.status_label.setAlignment(Qt.AlignRight)
+        self.status_label.setStyleSheet("color: #888888;") # Default gray text
+        main_layout.addWidget(self.status_label)
+
         # --- SERIAL CONNECTION ---
         try:
             self.ser = serial.Serial(COM_PORT, BAUD_RATE, timeout=0) 
         except Exception as e:
             self.rpm_label.setText("PORT ERROR")
             self.speed_label.setText(f"Check {COM_PORT}")
+            self.status_label.setText("🔴 Serial Port Disconnected")
             self.setStyleSheet("QMainWindow { background-color: #121212; } QLabel { color: #FF3333; }")
             self.ser = None
             
@@ -103,6 +110,17 @@ class OBDDashboard(QMainWindow):
             while self.ser.in_waiting:
                 line = self.ser.readline().decode('utf-8').strip()
                 
+                # Check for explicit failure strings during the boot process
+                if "Couldn't connect to OBD scanner" in line or "Couldn't initialize" in line:
+                    self.status_label.setText("🔴 ELM327 BT Connection Failed")
+                    self.status_label.setStyleSheet("color: #FF3333;")
+                
+                # If we get ANY normal looping strings, the ESP32 is successfully linked to the ELM
+                elif line and not line.startswith("Attempting"):
+                    self.status_label.setText("🟢 ELM327 Connected")
+                    self.status_label.setStyleSheet("color: #00E676;")
+
+                # Parse specific data strings
                 if "Engine RPM:" in line:
                     val = line.split(":")[1].strip()
                     self.rpm_label.setText(f"RPM: {val}")
@@ -115,13 +133,11 @@ class OBDDashboard(QMainWindow):
                     val_float = float(line.split(":")[1].strip())
                     self.load_text.setText(f"LOAD: {val_float:.1f} %")
                     self.load_bar.setValue(int(val_float))
-                    # Hide the default progress bar percentage text
                     self.load_bar.setFormat("") 
                     
                 elif "Battery (V):" in line:
                     val_float = float(line.split(":")[1].strip())
                     self.volt_text.setText(f"BATT: {val_float:.1f} V")
-                    # Multiply by 10 to fit our 100-150 integer scale
                     self.volt_bar.setValue(int(val_float * 10))
                     self.volt_bar.setFormat("")
                     
