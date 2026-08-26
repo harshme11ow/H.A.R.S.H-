@@ -9,7 +9,7 @@ BluetoothSerial SerialBT;
 ELM327 myELM327;
 const char* ELM_NAME = "OBDII"; 
 
-typedef enum { STATE_RPM, STATE_COOLANT, STATE_SPEED } obd_pid_states;
+typedef enum { STATE_RPM, STATE_SPEED, STATE_LOAD, STATE_VOLTAGE } obd_pid_states;
 obd_pid_states obd_state = STATE_RPM;
 
 // NEW: Variable to track the last time we printed our status message
@@ -45,32 +45,13 @@ void loop() {
 
   // The rest of your state machine stays exactly the same
   switch (obd_state) {
-    
     case STATE_RPM: {
       float tempRPM = myELM327.rpm();
-      
       if (myELM327.nb_rx_state == ELM_SUCCESS) {
         DEBUG_PORT.print("Engine RPM: ");
         DEBUG_PORT.println((uint32_t)tempRPM);
-        obd_state = STATE_COOLANT; 
-      } 
-      else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
-        myELM327.printError();
-        obd_state = STATE_COOLANT;
-      }
-      break;
-    }
-    
-    case STATE_COOLANT: {
-      float tempCoolant = myELM327.throttle(); // Returns a percentage from 0-100%
-      
-      if (myELM327.nb_rx_state == ELM_SUCCESS) {
-        DEBUG_PORT.print("Coolant Temp (C): ");
-        DEBUG_PORT.println(tempCoolant);
         obd_state = STATE_SPEED; 
-      } 
-      else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
-        myELM327.printError();
+      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
         obd_state = STATE_SPEED;
       }
       break;
@@ -78,15 +59,36 @@ void loop() {
     
     case STATE_SPEED: {
       float tempSpeed = myELM327.kph();
-      
       if (myELM327.nb_rx_state == ELM_SUCCESS) {
         DEBUG_PORT.print("Speed (KPH): ");
         DEBUG_PORT.println((uint32_t)tempSpeed);
+        obd_state = STATE_LOAD; 
+      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
+        obd_state = STATE_LOAD;
+      }
+      break;
+    }
+
+    case STATE_LOAD: {
+      float tempLoad = myELM327.engineLoad();
+      if (myELM327.nb_rx_state == ELM_SUCCESS) {
+        DEBUG_PORT.print("Engine Load (%): ");
+        DEBUG_PORT.println(tempLoad);
+        obd_state = STATE_VOLTAGE; 
+      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
+        obd_state = STATE_VOLTAGE;
+      }
+      break;
+    }
+
+    case STATE_VOLTAGE: {
+      float tempVoltage = myELM327.batteryVoltage();
+      if (myELM327.nb_rx_state == ELM_SUCCESS) {
+        DEBUG_PORT.print("Battery (V): ");
+        DEBUG_PORT.println(tempVoltage);
         DEBUG_PORT.println("-------------------------");
         obd_state = STATE_RPM; 
-      } 
-      else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
-        myELM327.printError();
+      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
         obd_state = STATE_RPM;
       }
       break;
