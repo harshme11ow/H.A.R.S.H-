@@ -9,9 +9,12 @@ BluetoothSerial SerialBT;
 ELM327 myELM327;
 const char* ELM_NAME = "OBDII"; 
 
-typedef enum { STATE_RPM, STATE_SPEED, STATE_LOAD, STATE_VOLTAGE, STATE_COOLANT, STATE_MAP } obd_pid_states;
-obd_pid_states obd_state = STATE_RPM;
-// NEW: Variable to track the last time we printed our status message
+typedef enum { 
+  STATE_RPM, STATE_SPEED, STATE_LOAD, STATE_VOLTAGE, 
+  STATE_COOLANT, STATE_MAP, STATE_FUEL, STATE_OIL, STATE_THROTTLE 
+} obd_pid_states;
+
+obd_pid_states obd_state = STATE_RPM;// NEW: Variable to track the last time we printed our status message
 unsigned long lastStatusTime = 0;
 
 void setup() {
@@ -59,7 +62,7 @@ void loop() {
     case STATE_SPEED: {
       float tempSpeed = myELM327.mph();
       if (myELM327.nb_rx_state == ELM_SUCCESS) {
-        DEBUG_PORT.print("Speed (KPH): ");
+        DEBUG_PORT.print("Speed (MPH): ");
         DEBUG_PORT.println((uint32_t)tempSpeed);
         obd_state = STATE_LOAD; 
       } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
@@ -105,11 +108,46 @@ void loop() {
     }
 
     case STATE_MAP: {
-      // Manifold Absolute Pressure is PID 0x0B
       float tempMap = myELM327.manifoldPressure();
       if (myELM327.nb_rx_state == ELM_SUCCESS) {
         DEBUG_PORT.print("MAP (kPa): ");
         DEBUG_PORT.println(tempMap);
+        obd_state = STATE_FUEL; 
+      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
+        obd_state = STATE_FUEL;
+      }
+      break;
+    }
+
+    case STATE_FUEL: {
+      float tempFuel = myELM327.fuelLevel();
+      if (myELM327.nb_rx_state == ELM_SUCCESS) {
+        DEBUG_PORT.print("Fuel (%): ");
+        DEBUG_PORT.println(tempFuel);
+        obd_state = STATE_OIL; 
+      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
+        obd_state = STATE_OIL;
+      }
+      break;
+    }
+
+    case STATE_OIL: {
+      float tempOil = myELM327.engineOilTemp();
+      if (myELM327.nb_rx_state == ELM_SUCCESS) {
+        DEBUG_PORT.print("Oil Temp (C): ");
+        DEBUG_PORT.println(tempOil);
+        obd_state = STATE_THROTTLE; 
+      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
+        obd_state = STATE_THROTTLE;
+      }
+      break;
+    }
+
+    case STATE_THROTTLE: {
+      float tempThrottle = myELM327.throttle();
+      if (myELM327.nb_rx_state == ELM_SUCCESS) {
+        DEBUG_PORT.print("Throttle (%): ");
+        DEBUG_PORT.println(tempThrottle);
         DEBUG_PORT.println("-------------------------");
         obd_state = STATE_RPM; 
       } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
