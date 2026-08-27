@@ -43,7 +43,7 @@ class OBDDashboard(QMainWindow):
         self.rpm_label.setAlignment(Qt.AlignCenter)
         main_layout.addWidget(self.rpm_label)
         
-        self.speed_label = QLabel("SPEED: -- KPH")
+        self.speed_label = QLabel("SPEED: -- MPH")
         self.speed_label.setFont(QFont("Consolas", 32, QFont.Bold))
         self.speed_label.setAlignment(Qt.AlignCenter)
         main_layout.addWidget(self.speed_label)
@@ -117,9 +117,9 @@ class OBDDashboard(QMainWindow):
                     val = line.split(":")[1].strip()
                     self.rpm_label.setText(f"RPM: {val}")
                     
-                elif "Speed (KPH):" in line:
+                elif "Speed (MPH):" in line:
                     val = line.split(":")[1].strip()
-                    self.speed_label.setText(f"SPEED: {val} KPH")
+                    self.speed_label.setText(f"SPEED: {val} MPH")
                     
                 elif "Engine Load (%):" in line:
                     val_float = float(line.split(":")[1].strip())

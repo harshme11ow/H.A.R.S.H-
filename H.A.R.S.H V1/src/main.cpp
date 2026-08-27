@@ -57,7 +57,7 @@ void loop() {
     }
     
     case STATE_SPEED: {
-      float tempSpeed = myELM327.kph();
+      float tempSpeed = myELM327.mph();
       if (myELM327.nb_rx_state == ELM_SUCCESS) {
         DEBUG_PORT.print("Speed (KPH): ");
         DEBUG_PORT.println((uint32_t)tempSpeed);
