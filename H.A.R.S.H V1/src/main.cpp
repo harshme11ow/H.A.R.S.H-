@@ -9,9 +9,8 @@ BluetoothSerial SerialBT;
 ELM327 myELM327;
 const char* ELM_NAME = "OBDII"; 
 
-typedef enum { STATE_RPM, STATE_SPEED, STATE_LOAD, STATE_VOLTAGE } obd_pid_states;
+typedef enum { STATE_RPM, STATE_SPEED, STATE_LOAD, STATE_VOLTAGE, STATE_COOLANT, STATE_MAP } obd_pid_states;
 obd_pid_states obd_state = STATE_RPM;
-
 // NEW: Variable to track the last time we printed our status message
 unsigned long lastStatusTime = 0;
 
@@ -86,6 +85,31 @@ void loop() {
       if (myELM327.nb_rx_state == ELM_SUCCESS) {
         DEBUG_PORT.print("Battery (V): ");
         DEBUG_PORT.println(tempVoltage);
+        obd_state = STATE_COOLANT; 
+      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
+        obd_state = STATE_COOLANT;
+      }
+      break;
+    }
+
+    case STATE_COOLANT: {
+      float tempCoolant = myELM327.engineCoolantTemp();
+      if (myELM327.nb_rx_state == ELM_SUCCESS) {
+        DEBUG_PORT.print("Coolant (C): ");
+        DEBUG_PORT.println(tempCoolant);
+        obd_state = STATE_MAP; 
+      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
+        obd_state = STATE_MAP;
+      }
+      break;
+    }
+
+    case STATE_MAP: {
+      // Manifold Absolute Pressure is PID 0x0B
+      float tempMap = myELM327.manifoldPressure();
+      if (myELM327.nb_rx_state == ELM_SUCCESS) {
+        DEBUG_PORT.print("MAP (kPa): ");
+        DEBUG_PORT.println(tempMap);
         DEBUG_PORT.println("-------------------------");
         obd_state = STATE_RPM; 
       } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
