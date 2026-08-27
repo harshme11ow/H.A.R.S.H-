@@ -132,7 +132,7 @@ void loop() {
     }
 
     case STATE_OIL: {
-      float tempOil = myELM327.engineOilTemp();
+      float tempOil = myELM327.oilTemp();
       if (myELM327.nb_rx_state == ELM_SUCCESS) {
         DEBUG_PORT.print("Oil Temp (C): ");
         DEBUG_PORT.println(tempOil);
