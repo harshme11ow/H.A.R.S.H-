@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QLabel, QVBoxLayout,
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QFont
 
-COM_PORT = 'COM8'
+COM_PORT = 'COM10'
 BAUD_RATE = 115200
 
 class OBDDashboard(QMainWindow):
