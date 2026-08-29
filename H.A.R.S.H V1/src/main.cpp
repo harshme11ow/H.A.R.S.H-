@@ -157,7 +157,7 @@ void loop() {
 
     case STATE_OIL:
       if (myELM327.nb_rx_state == ELM_SUCCESS) {
-        valOil = myELM327.engineOilTemp();
+        valOil = myELM327.oilTemp();
         obd_state = STATE_THROTTLE; 
       } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) obd_state = STATE_THROTTLE;
       break;
