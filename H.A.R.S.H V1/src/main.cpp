@@ -55,7 +55,8 @@ void setup() {
     while(1);
   }
   
-  if (!myELM327.begin(ELM_PORT, false, 2000, '6')) {
+// Let the ELM327 auto-search for the protocol
+  if (!myELM327.begin(ELM_PORT, true, 2000)) {    
     display.clearDisplay();
     display.setCursor(0, 20);
     display.print("OBD FAULT");
