@@ -94,13 +94,11 @@ void updateDisplay() {
 }
 
 void loop() {
-  // Update screen at 5 FPS
   if (millis() - lastDisplayUpdate >= 200) {
     updateDisplay();
     lastDisplayUpdate = millis();
   }
 
-  // OBD State Machine (Ask car, save to global variable, print to Serial for Python dashboard)
   switch (obd_state) {
     case STATE_RPM: {
       float temp = myELM327.rpm(); 
@@ -108,7 +106,10 @@ void loop() {
         valRPM = temp;
         Serial.print("Engine RPM: "); Serial.println(valRPM);
         obd_state = STATE_SPEED; 
-      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) obd_state = STATE_SPEED;
+      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
+        Serial.print("RPM Error: "); myELM327.printError();
+        obd_state = STATE_SPEED;
+      }
       break;
     }
       
@@ -118,7 +119,9 @@ void loop() {
         valSpeed = temp;
         Serial.print("Speed (MPH): "); Serial.println(valSpeed);
         obd_state = STATE_LOAD; 
-      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) obd_state = STATE_LOAD;
+      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
+        obd_state = STATE_LOAD;
+      }
       break;
     }
 
@@ -128,7 +131,9 @@ void loop() {
         valLoad = temp;
         Serial.print("Engine Load (%): "); Serial.println(valLoad);
         obd_state = STATE_VOLTAGE; 
-      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) obd_state = STATE_VOLTAGE;
+      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
+        obd_state = STATE_VOLTAGE;
+      }
       break;
     }
 
@@ -138,7 +143,9 @@ void loop() {
         valVolt = temp;
         Serial.print("Battery (V): "); Serial.println(valVolt);
         obd_state = STATE_COOLANT; 
-      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) obd_state = STATE_COOLANT;
+      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
+        obd_state = STATE_COOLANT;
+      }
       break;
     }
 
@@ -148,7 +155,9 @@ void loop() {
         valCoolant = temp;
         Serial.print("Coolant (C): "); Serial.println(valCoolant);
         obd_state = STATE_MAP; 
-      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) obd_state = STATE_MAP;
+      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
+        obd_state = STATE_MAP;
+      }
       break;
     }
 
@@ -157,30 +166,17 @@ void loop() {
       if (myELM327.nb_rx_state == ELM_SUCCESS) {
         valMap = temp;
         Serial.print("MAP (kPa): "); Serial.println(valMap);
-        obd_state = STATE_FUEL; 
-      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) obd_state = STATE_FUEL;
-      break;
-    }
-
-    case STATE_FUEL: {
-      float temp = myELM327.fuelLevel();
-      if (myELM327.nb_rx_state == ELM_SUCCESS) {
-        valFuel = temp;
-        Serial.print("Fuel (%): "); Serial.println(valFuel);
-        obd_state = STATE_OIL; 
-      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) obd_state = STATE_OIL;
-      break;
-    }
-
-    case STATE_OIL: {
-      float temp = myELM327.oilTemp();
-      if (myELM327.nb_rx_state == ELM_SUCCESS) {
-        valOil = temp;
-        Serial.print("Oil Temp (C): "); Serial.println(valOil);
+        // SKIPPING FUEL AND OIL - Jumping straight to Throttle
         obd_state = STATE_THROTTLE; 
-      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) obd_state = STATE_THROTTLE;
+      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
+        obd_state = STATE_THROTTLE;
+      }
       break;
     }
+
+    // Temporarily bypassing these to see if they were crashing the ELM327
+    case STATE_FUEL: obd_state = STATE_OIL; break;
+    case STATE_OIL: obd_state = STATE_THROTTLE; break;
 
     case STATE_THROTTLE: {
       float temp = myELM327.throttle();
@@ -188,7 +184,9 @@ void loop() {
         valThrottle = temp;
         Serial.print("Throttle (%): "); Serial.println(valThrottle);
         obd_state = STATE_RPM; 
-      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) obd_state = STATE_RPM;
+      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
+        obd_state = STATE_RPM;
+      }
       break;
     }
   }
