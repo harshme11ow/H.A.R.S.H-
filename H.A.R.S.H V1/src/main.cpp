@@ -5,11 +5,12 @@
 #include "BluetoothSerial.h"
 #include "ELMduino.h"
 
-// --- OLED CONFIG ---
+// --- OLED & MULTIPLEXER CONFIG ---
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 #define OLED_RESET -1
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+#define TCAADDR 0x70 
 
 // --- OBD CONFIG ---
 BluetoothSerial SerialBT;
@@ -17,89 +18,106 @@ BluetoothSerial SerialBT;
 ELM327 myELM327;
 const char* ELM_NAME = "OBDII"; 
 
-typedef enum { 
-  STATE_RPM, STATE_SPEED, STATE_LOAD, STATE_VOLTAGE, 
-  STATE_COOLANT, STATE_MAP, STATE_FUEL, STATE_OIL, STATE_THROTTLE 
-} obd_pid_states;
-
+// Asymmetric state machine
+typedef enum { STATE_RPM, STATE_SPEED, STATE_SLOW_POLL } obd_pid_states;
 obd_pid_states obd_state = STATE_RPM;
+int slow_metric_step = 0; 
 
-// --- GLOBAL VARIABLES ---
+// Global data storage
 float valRPM = 0, valSpeed = 0, valLoad = 0, valVolt = 0;
 float valCoolant = 0, valMap = 0, valFuel = 0, valOil = 0, valThrottle = 0;
+
 unsigned long lastDisplayUpdate = 0;
+
+// Hardware I2C routing function
+void tcaselect(uint8_t i) {
+  if (i > 7) return;
+  Wire.beginTransmission(TCAADDR);
+  Wire.write(1 << i);
+  Wire.endTransmission();
+}
 
 void setup() {
   Serial.begin(115200);
-  Wire.begin(); 
-  Wire.setClock(400000); // Fast I2C
+  Wire.begin();
+  Wire.setClock(400000); 
   
-  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println("SSD1306 allocation failed");
-    while(1);
+  // Boot all 3 screens
+  for(int i = 0; i < 3; i++) {
+    tcaselect(i);
+    if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+      Serial.print("OLED init failed on channel "); Serial.println(i);
+    }
+    display.clearDisplay();
+    display.setTextColor(WHITE);
+    display.setTextSize(2);
+    display.setCursor(10, 20);
+    display.print("BOOTING...");
+    display.display();
   }
-  
-  display.clearDisplay();
-  display.setTextColor(WHITE);
-  display.setTextSize(2);
-  display.setCursor(10, 20);
-  display.print("BOOTING...");
-  display.display();
 
+  // Connect to ELM327
   ELM_PORT.begin("ESP32_OBD_Client", true); 
   if (!ELM_PORT.connect(ELM_NAME)) {
-    display.clearDisplay();
-    display.setCursor(0, 20);
-    display.print("BT FAULT");
-    display.display();
+    Serial.println("BT Connection Failed!");
     while(1);
   }
   
-// Let the ELM327 auto-search for the protocol
-  if (!myELM327.begin(ELM_PORT, true, 2000)) {    
-    display.clearDisplay();
-    display.setCursor(0, 20);
-    display.print("OBD FAULT");
-    display.display();
+  // Using auto-protocol negotiation so the Accord ECU doesn't panic
+  if (!myELM327.begin(ELM_PORT, true, 2000)) {
+    Serial.println("ELM Initialization Failed!");
     while (1);
   }
 }
 
-void updateDisplay() {
+void updateScreens() {
+  // --- SCREEN 1 (Channel 0): Main Dash ---
+  tcaselect(0);
   display.clearDisplay();
-  
-  // --- TOP HALF: Driving Data ---
-  display.setTextSize(2);
-  display.setCursor(0, 0);
-  display.print((uint32_t)valSpeed); display.print(" MPH");
-  
-  display.setCursor(0, 20);
-  display.print((uint32_t)valRPM); display.print(" RPM");
-  
-  // --- BOTTOM HALF: Vitals ---
+  display.setCursor(0, 5);
+  display.setTextSize(3); 
+  display.print((uint32_t)valSpeed); 
   display.setTextSize(1);
+  display.println(" MPH");
+  
+  display.setCursor(0, 40);
+  display.setTextSize(2);
+  display.print((uint32_t)valRPM); 
+  display.println(" RPM");
+  display.display();
+
+  // --- SCREEN 2 (Channel 1): Vitals ---
+  tcaselect(1);
+  display.clearDisplay();
+  display.setTextSize(1);
+  
   float boostPSI = (valMap - 101.325) * 0.145038;
   int coolantF = (valCoolant * 9/5) + 32;
+  int oilF = (valOil * 9/5) + 32;
 
-  display.setCursor(0, 42);
-  display.print("BST:"); display.print(boostPSI, 1); 
-  display.setCursor(64, 42);
-  display.print("TMP:"); display.print(coolantF);
+  display.setCursor(0, 5);  display.print("BOOST:   "); display.print(boostPSI, 1); display.println(" PSI");
+  display.setCursor(0, 25); display.print("COOLANT: "); display.print(coolantF); display.println(" F");
+  display.setCursor(0, 45); display.print("OIL:     "); display.print(oilF); display.println(" F");
+  display.display();
 
-  display.setCursor(0, 54);
-  display.print("LOD:"); display.print((int)valLoad); display.print("%");
-  display.setCursor(64, 54);
-  display.print("VLT:"); display.print(valVolt, 1);
-  
+  // --- SCREEN 3 (Channel 2): Telemetry ---
+  tcaselect(2);
+  display.clearDisplay();
+  display.setCursor(0, 0);  display.print("LOAD: "); display.print(valLoad, 1); display.println("%");
+  display.setCursor(0, 16); display.print("THR:  "); display.print(valThrottle, 1); display.println("%");
+  display.setCursor(0, 32); display.print("FUEL: "); display.print(valFuel, 1); display.println("%");
+  display.setCursor(0, 48); display.print("BATT: "); display.print(valVolt, 1); display.println("V");
   display.display();
 }
 
 void loop() {
+  // Refresh all screens at 5 FPS
   if (millis() - lastDisplayUpdate >= 200) {
-    updateDisplay();
+    updateScreens();
     lastDisplayUpdate = millis();
   }
 
+  // --- ASYMMETRIC OBD STATE MACHINE ---
   switch (obd_state) {
     case STATE_RPM: {
       float temp = myELM327.rpm(); 
@@ -107,10 +125,7 @@ void loop() {
         valRPM = temp;
         Serial.print("Engine RPM: "); Serial.println(valRPM);
         obd_state = STATE_SPEED; 
-      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
-        Serial.print("RPM Error: "); myELM327.printError();
-        obd_state = STATE_SPEED;
-      }
+      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) obd_state = STATE_SPEED;
       break;
     }
       
@@ -119,74 +134,56 @@ void loop() {
       if (myELM327.nb_rx_state == ELM_SUCCESS) {
         valSpeed = temp;
         Serial.print("Speed (MPH): "); Serial.println(valSpeed);
-        obd_state = STATE_LOAD; 
-      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
-        obd_state = STATE_LOAD;
-      }
+        obd_state = STATE_SLOW_POLL; 
+      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) obd_state = STATE_SLOW_POLL;
       break;
     }
 
-    case STATE_LOAD: {
-      float temp = myELM327.engineLoad();
-      if (myELM327.nb_rx_state == ELM_SUCCESS) {
-        valLoad = temp;
-        Serial.print("Engine Load (%): "); Serial.println(valLoad);
-        obd_state = STATE_VOLTAGE; 
-      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
-        obd_state = STATE_VOLTAGE;
-      }
-      break;
-    }
-
-    case STATE_VOLTAGE: {
-      float temp = myELM327.batteryVoltage();
-      if (myELM327.nb_rx_state == ELM_SUCCESS) {
-        valVolt = temp;
-        Serial.print("Battery (V): "); Serial.println(valVolt);
-        obd_state = STATE_COOLANT; 
-      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
-        obd_state = STATE_COOLANT;
-      }
-      break;
-    }
-
-    case STATE_COOLANT: {
-      float temp = myELM327.engineCoolantTemp();
-      if (myELM327.nb_rx_state == ELM_SUCCESS) {
-        valCoolant = temp;
-        Serial.print("Coolant (C): "); Serial.println(valCoolant);
-        obd_state = STATE_MAP; 
-      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
-        obd_state = STATE_MAP;
-      }
-      break;
-    }
-
-    case STATE_MAP: {
-      float temp = myELM327.manifoldPressure();
-      if (myELM327.nb_rx_state == ELM_SUCCESS) {
-        valMap = temp;
-        Serial.print("MAP (kPa): "); Serial.println(valMap);
-        // SKIPPING FUEL AND OIL - Jumping straight to Throttle
-        obd_state = STATE_THROTTLE; 
-      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
-        obd_state = STATE_THROTTLE;
-      }
-      break;
-    }
-
-    // Temporarily bypassing these to see if they were crashing the ELM327
-    case STATE_FUEL: obd_state = STATE_OIL; break;
-    case STATE_OIL: obd_state = STATE_THROTTLE; break;
-
-    case STATE_THROTTLE: {
-      float temp = myELM327.throttle();
-      if (myELM327.nb_rx_state == ELM_SUCCESS) {
-        valThrottle = temp;
-        Serial.print("Throttle (%): "); Serial.println(valThrottle);
-        obd_state = STATE_RPM; 
-      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
-        obd_state = STATE_RPM;
+    case STATE_SLOW_POLL: {
+      // Cycle through one background metric, then instantly bounce back to RPM
+      switch (slow_metric_step) {
+        case 0: {
+          float temp = myELM327.engineLoad();
+          if (myELM327.nb_rx_state == ELM_SUCCESS) { valLoad = temp; Serial.print("Engine Load (%): "); Serial.println(valLoad); slow_metric_step = 1; obd_state = STATE_RPM; } 
+          else if (myELM327.nb_rx_state != ELM_GETTING_MSG) { slow_metric_step = 1; obd_state = STATE_RPM; }
+          break;
+        }
+        case 1: {
+          float temp = myELM327.batteryVoltage();
+          if (myELM327.nb_rx_state == ELM_SUCCESS) { valVolt = temp; Serial.print("Battery (V): "); Serial.println(valVolt); slow_metric_step = 2; obd_state = STATE_RPM; } 
+          else if (myELM327.nb_rx_state != ELM_GETTING_MSG) { slow_metric_step = 2; obd_state = STATE_RPM; }
+          break;
+        }
+        case 2: {
+          float temp = myELM327.engineCoolantTemp();
+          if (myELM327.nb_rx_state == ELM_SUCCESS) { valCoolant = temp; Serial.print("Coolant (C): "); Serial.println(valCoolant); slow_metric_step = 3; obd_state = STATE_RPM; } 
+          else if (myELM327.nb_rx_state != ELM_GETTING_MSG) { slow_metric_step = 3; obd_state = STATE_RPM; }
+          break;
+        }
+        case 3: {
+          float temp = myELM327.manifoldPressure();
+          if (myELM327.nb_rx_state == ELM_SUCCESS) { valMap = temp; Serial.print("MAP (kPa): "); Serial.println(valMap); slow_metric_step = 4; obd_state = STATE_RPM; } 
+          else if (myELM327.nb_rx_state != ELM_GETTING_MSG) { slow_metric_step = 4; obd_state = STATE_RPM; }
+          break;
+        }
+        case 4: {
+          float temp = myELM327.fuelLevel();
+          if (myELM327.nb_rx_state == ELM_SUCCESS) { valFuel = temp; Serial.print("Fuel (%): "); Serial.println(valFuel); slow_metric_step = 5; obd_state = STATE_RPM; } 
+          else if (myELM327.nb_rx_state != ELM_GETTING_MSG) { slow_metric_step = 5; obd_state = STATE_RPM; }
+          break;
+        }
+        case 5: {
+          float temp = myELM327.engineOilTemp();
+          if (myELM327.nb_rx_state == ELM_SUCCESS) { valOil = temp; Serial.print("Oil Temp (C): "); Serial.println(valOil); slow_metric_step = 6; obd_state = STATE_RPM; } 
+          else if (myELM327.nb_rx_state != ELM_GETTING_MSG) { slow_metric_step = 6; obd_state = STATE_RPM; }
+          break;
+        }
+        case 6: {
+          float temp = myELM327.throttle();
+          if (myELM327.nb_rx_state == ELM_SUCCESS) { valThrottle = temp; Serial.print("Throttle (%): "); Serial.println(valThrottle); slow_metric_step = 0; obd_state = STATE_RPM; } 
+          else if (myELM327.nb_rx_state != ELM_GETTING_MSG) { slow_metric_step = 0; obd_state = STATE_RPM; }
+          break;
+        }
       }
       break;
     }
