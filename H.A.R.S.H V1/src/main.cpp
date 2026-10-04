@@ -1,206 +1,121 @@
 #include <Arduino.h>
-#include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
-#include "BluetoothSerial.h"
-#include "ELMduino.h"
+#include "driver/twai.h"
 
-// --- OLED & MULTIPLEXER CONFIG ---
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 64
-#define OLED_RESET -1
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-#define TCAADDR 0x70 
+#define CAN_TX_PIN 5
+#define CAN_RX_PIN 4
 
-// --- OBD CONFIG ---
-BluetoothSerial SerialBT;
-#define ELM_PORT SerialBT
-ELM327 myELM327;
-const char* ELM_NAME = "OBDII"; 
-
-// Asymmetric state machine
-typedef enum { STATE_RPM, STATE_SPEED, STATE_SLOW_POLL } obd_pid_states;
-obd_pid_states obd_state = STATE_RPM;
-int slow_metric_step = 0; 
-
-// Global data storage (Stripped down to just the active 6 metrics)
-float valRPM = 0, valSpeed = 0, valLoad = 0, valVolt = 0, valMap = 0, valFuel = 0;
-
-unsigned long lastDisplayUpdate = 0;
-
-// Hardware I2C routing function
-void tcaselect(uint8_t i) {
-  if (i > 7) return;
-  Wire.beginTransmission(TCAADDR);
-  Wire.write(1 << i);
-  Wire.endTransmission();
-}
+//this is the code for the dummy ECU CAN broadcaster. It will broadcast a set of OBD-II frames with simulated data to mimic a real ECU. The data is generated using sine waves to create smooth transitions for gauges like RPM, speed, and temperature.
 
 void setup() {
   Serial.begin(115200);
-  Wire.begin();
-  Wire.setClock(400000); 
-  
-  // Boot all 3 screens
-  for(int i = 0; i < 3; i++) {
-    tcaselect(i);
-    if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-      Serial.print("OLED init failed on channel "); Serial.println(i);
-    }
-    display.clearDisplay();
-    display.setTextColor(WHITE);
-    display.setTextSize(2);
-    display.setCursor(10, 20);
-    display.print("BOOTING...");
-    display.display();
-  }
+  Serial.println("Starting Dummy ECU CAN Broadcaster...");
 
-  // Connect to ELM327
-  ELM_PORT.begin("ESP32_OBD_Client", true); 
-  if (!ELM_PORT.connect(ELM_NAME)) {
-    Serial.println("BT Connection Failed!");
+  // Configure TWAI (CAN) Driver at 500 kbps
+  twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT((gpio_num_t)CAN_TX_PIN, (gpio_num_t)CAN_RX_PIN, TWAI_MODE_NORMAL);
+  twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();
+  twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+
+  if (twai_driver_install(&g_config, &t_config, &f_config) == ESP_OK) {
+    Serial.println("CAN Driver Installed.");
+  } else {
+    Serial.println("CAN Driver Install Failed.");
     while(1);
   }
-  
-  // Using auto-protocol negotiation so the Accord ECU doesn't panic
-  if (!myELM327.begin(ELM_PORT, true, 2000)) {
-    Serial.println("ELM Initialization Failed!");
-    while (1);
+
+  if (twai_start() == ESP_OK) {
+    Serial.println("CAN Broadcasting Started!");
   }
 }
 
-void updateScreens() {
-  // --- SCREEN 1 (Channel 0): Main Dash ---
-  tcaselect(0);
-  display.clearDisplay();
+// Function to package data into standard OBD-II format
+void sendOBDFrame(uint8_t pid, uint8_t dataA, uint8_t dataB) {
+  twai_message_t message;
+  message.identifier = 0x7E8; // 0x7E8 is the standard ID for Engine ECU responses
+  message.extd = 0;           
+  message.rtr = 0;
+  message.data_length_code = 8;
   
-  display.setCursor(0, 5);
-  display.setTextSize(3); 
-  display.print((uint32_t)valSpeed); 
-  display.setTextSize(1);
-  display.println(" MPH");
-  
-  display.setCursor(0, 40);
-  display.setTextSize(2);
-  display.print((uint32_t)valRPM); 
-  display.println(" RPM");
-  display.display();
+  message.data[0] = 4;        // Byte 0: Data length (4 bytes follow)
+  message.data[1] = 0x41;     // Byte 1: Mode 41 (Standard Success Response)
+  message.data[2] = pid;      // Byte 2: The requested PID
+  message.data[3] = dataA;    // Byte 3: Data A
+  message.data[4] = dataB;    // Byte 4: Data B
+  message.data[5] = 0x00;     // Padding
+  message.data[6] = 0x00;
+  message.data[7] = 0x00;
 
-  // --- SCREEN 2 (Channel 1): The Segmented Boost Gauge ---
-  tcaselect(1);
-  display.clearDisplay();
-  
-  float boostPSI = (valMap - 101.325) * 0.145038;
-
-  // 1. Draw the segmented radial arc (-10 to 20 PSI)
-  int num_segments = 20; 
-  int active_segments = map(boostPSI, -10, 20, 0, num_segments);
-  active_segments = constrain(active_segments, 0, num_segments);
-
-  for (int i = 0; i < num_segments; i++) {
-    // Calculate angles from left (PI) to right (0)
-    float angle = 3.14159 - (i * (3.14159 / (num_segments - 1)));
-    
-    // Inner and outer radiuses for the segments
-    int x_in = 64 + 42 * cos(angle);
-    int y_in = 58 - 42 * sin(angle);
-    int x_out = 64 + 56 * cos(angle);
-    int y_out = 58 - 56 * sin(angle);
-
-    if (i < active_segments) {
-      // Draw a thick, blocky quadrilateral by layering offset lines
-      for(int w = -1; w <= 1; w++) {
-        display.drawLine(x_in + w, y_in, x_out + w, y_out, WHITE);
-        display.drawLine(x_in, y_in + w, x_out, y_out + w, WHITE);
-      }
-    } else {
-      // Draw a thin outline for inactive boost segments
-      display.drawLine(x_in, y_in, x_out, y_out, WHITE);
-    }
-  }
-
-  // 2. Draw the large centered digital readout
-  display.setTextSize(3);
-  // Shift X coordinate slightly to keep the text perfectly centered
-  if (boostPSI <= -10 || boostPSI >= 10) { display.setCursor(16, 20); } 
-  else if (boostPSI < 0) { display.setCursor(25, 20); }
-  else { display.setCursor(34, 20); }
-  display.print(boostPSI, 1);
-  
-  // 3. Draw the PSI label
-  display.setTextSize(1);
-  display.setCursor(55, 48);
-  display.print("PSI");
-  
-  display.display();
-
-  // --- SCREEN 3 (Channel 2): Refined Telemetry ---
-  tcaselect(2);
-  display.clearDisplay();
-  display.setTextSize(2);
-  
-  // Spaced evenly for 3 metrics
-  display.setCursor(0, 0);  display.print("LOD:"); display.print((int)valLoad); display.println("%");
-  display.setCursor(0, 22); display.print("FUL:"); display.print((int)valFuel); display.println("%");
-  display.setCursor(0, 44); display.print("BAT:"); display.print(valVolt, 1); display.println("V");
-  display.display();
+  twai_transmit(&message, pdMS_TO_TICKS(10));
 }
 
 void loop() {
-  if (millis() - lastDisplayUpdate >= 200) {
-    updateScreens();
-    lastDisplayUpdate = millis();
-  }
+  // Use millis() to generate smooth sine waves for realistic sweeping gauges
+  float time = millis() / 1000.0;
+  
+  // 1. RPM (0x0C): Formula = ((A * 256) + B) / 4
+  int simRPM = 3650 + 2850 * sin(time); // Sweeps 800 to 6500
+  int rpmA = (simRPM * 4) / 256;
+  int rpmB = (simRPM * 4) % 256;
+  
+  // 2. Speed (0x0D): Formula = A (in km/h)
+  int simSpeedKPH = 64 + 64 * sin(time * 0.5); // Sweeps 0 to 128 km/h (~80 MPH)
+  int speedA = simSpeedKPH;
 
-  // --- LEAN ASYMMETRIC OBD STATE MACHINE ---
-  switch (obd_state) {
-    case STATE_RPM: {
-      float temp = myELM327.rpm(); 
-      if (myELM327.nb_rx_state == ELM_SUCCESS) {
-        valRPM = temp;
-        obd_state = STATE_SPEED; 
-      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) obd_state = STATE_SPEED;
-      break;
-    }
-      
-    case STATE_SPEED: {
-      float temp = myELM327.mph();
-      if (myELM327.nb_rx_state == ELM_SUCCESS) {
-        valSpeed = temp;
-        obd_state = STATE_SLOW_POLL; 
-      } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) obd_state = STATE_SLOW_POLL;
-      break;
-    }
+  // 3. MAP/Boost (0x0B): Formula = A (in kPa)
+  int simMAP = 115 + 85 * sin(time * 1.5); // Sweeps 30 to 200 kPa
+  int mapA = simMAP;
+  
+  // 4. Engine Load (0x04): Formula = A * 100 / 255
+  int simLoad = 50 + 50 * sin(time * 0.8); // Sweeps 0 to 100%
+  int loadA = (simLoad * 255) / 100;
 
-    case STATE_SLOW_POLL: {
-      // Stripped down to just 4 background metrics
-      switch (slow_metric_step) {
-        case 0: {
-          float temp = myELM327.engineLoad();
-          if (myELM327.nb_rx_state == ELM_SUCCESS) { valLoad = temp; slow_metric_step = 1; obd_state = STATE_RPM; } 
-          else if (myELM327.nb_rx_state != ELM_GETTING_MSG) { slow_metric_step = 1; obd_state = STATE_RPM; }
-          break;
-        }
-        case 1: {
-          float temp = myELM327.batteryVoltage();
-          if (myELM327.nb_rx_state == ELM_SUCCESS) { valVolt = temp; slow_metric_step = 2; obd_state = STATE_RPM; } 
-          else if (myELM327.nb_rx_state != ELM_GETTING_MSG) { slow_metric_step = 2; obd_state = STATE_RPM; }
-          break;
-        }
-        case 2: {
-          float temp = myELM327.manifoldPressure();
-          if (myELM327.nb_rx_state == ELM_SUCCESS) { valMap = temp; slow_metric_step = 3; obd_state = STATE_RPM; } 
-          else if (myELM327.nb_rx_state != ELM_GETTING_MSG) { slow_metric_step = 3; obd_state = STATE_RPM; }
-          break;
-        }
-        case 3: {
-          float temp = myELM327.fuelLevel();
-          if (myELM327.nb_rx_state == ELM_SUCCESS) { valFuel = temp; slow_metric_step = 0; obd_state = STATE_RPM; } 
-          else if (myELM327.nb_rx_state != ELM_GETTING_MSG) { slow_metric_step = 0; obd_state = STATE_RPM; }
-          break;
-        }
-      }
-      break;
-    }
-  }
+  // 5. Throttle Position (0x11): Formula = A * 100 / 255
+  int simThrottle = 50 + 50 * sin(time * 0.8); // Sweeps 0 to 100%
+  int throttleA = (simThrottle * 255) / 100;
+
+  // 6. Coolant Temp (0x05): Formula = A - 40 (in Celsius)
+  int simCoolant = 90 + 10 * sin(time * 0.2); // Sweeps 80C to 100C
+  int coolantA = simCoolant + 40;
+
+  // 7. Intake Air Temp (0x0F): Formula = A - 40 (in Celsius)
+  int simIAT = 40 + 10 * sin(time * 0.3); // Sweeps 30C to 50C
+  int iatA = simIAT + 40;
+
+  // 8. Oil Temp (0x5C): Formula = A - 40 (in Celsius)
+  int simOil = 100 + 10 * sin(time * 0.2); // Sweeps 90C to 110C
+  int oilA = simOil + 40;
+
+  // 9. Fuel Level (0x2F): Formula = A * 100 / 255
+  int simFuel = 50 + 50 * sin(time * 0.05); // Very slow sweep 0 to 100%
+  int fuelA = (simFuel * 255) / 100;
+
+  // 10. Control Module Voltage (0x42): Formula = ((A * 256) + B) / 1000
+  float simVolt = 13.9 + 0.9 * sin(time * 0.1); // Sweeps 13.0V to 14.8V
+  int voltVal = (int)(simVolt * 1000);
+  int voltA = voltVal / 256;
+  int voltB = voltVal % 256;
+
+  // --- BROADCAST ALL FRAMES ---
+  sendOBDFrame(0x0C, rpmA, rpmB); 
+  delay(5);
+  sendOBDFrame(0x0D, speedA, 0);  
+  delay(5);
+  sendOBDFrame(0x0B, mapA, 0);    
+  delay(5);
+  sendOBDFrame(0x04, loadA, 0);   
+  delay(5);
+  sendOBDFrame(0x11, throttleA, 0);   
+  delay(5);
+  sendOBDFrame(0x05, coolantA, 0);   
+  delay(5);
+  sendOBDFrame(0x0F, iatA, 0);   
+  delay(5);
+  sendOBDFrame(0x5C, oilA, 0);   
+  delay(5);
+  sendOBDFrame(0x2F, fuelA, 0);   
+  delay(5);
+  sendOBDFrame(0x42, voltA, voltB);   
+  delay(5);
+  
+  // Entire loop takes ~50ms. We are flooding the bus at roughly 20Hz, 
+  // mirroring the constant chatter of a high-speed automotive CAN bus.
 }
