@@ -1,16 +1,55 @@
 #include <Arduino.h>
-#include "driver/twai.h"
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include "driver/twai.h" // Native ESP32 CAN library
 
+// --- OLED & MULTIPLEXER CONFIG ---
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+#define TCAADDR 0x70 
+
+// --- CAN TRANSCEIVER PINS ---
 #define CAN_TX_PIN 5
 #define CAN_RX_PIN 4
 
-//this is the code for the dummy ECU CAN broadcaster. It will broadcast a set of OBD-II frames with simulated data to mimic a real ECU. The data is generated using sine waves to create smooth transitions for gauges like RPM, speed, and temperature.
+// Global data storage (Continuously updated by the CAN bus)
+float valRPM = 0, valSpeed = 0, valMap = 0;
+float valLoad = 0, valFuel = 0, valVolt = 0;
+float valThrottle = 0, valCoolant = 0, valIAT = 0, valOil = 0; // Parsed but hidden for now
+
+unsigned long lastDisplayUpdate = 0;
+
+// Hardware I2C routing function
+void tcaselect(uint8_t i) {
+  if (i > 7) return;
+  Wire.beginTransmission(TCAADDR);
+  Wire.write(1 << i);
+  Wire.endTransmission();
+}
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("Starting Dummy ECU CAN Broadcaster...");
+  Wire.begin();
+  Wire.setClock(400000); 
+  
+  // 1. Boot all 3 screens
+  for(int i = 0; i < 3; i++) {
+    tcaselect(i);
+    if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+      Serial.print("OLED init failed on channel "); Serial.println(i);
+    }
+    display.clearDisplay();
+    display.setTextColor(WHITE);
+    display.setTextSize(2);
+    display.setCursor(10, 20);
+    display.print("BOOTING...");
+    display.display();
+  }
 
-  // Configure TWAI (CAN) Driver at 500 kbps
+  // 2. Configure and Start the CAN Driver (500 kbps to match the dummy/vehicle)
   twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT((gpio_num_t)CAN_TX_PIN, (gpio_num_t)CAN_RX_PIN, TWAI_MODE_NORMAL);
   twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();
   twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
@@ -23,99 +62,112 @@ void setup() {
   }
 
   if (twai_start() == ESP_OK) {
-    Serial.println("CAN Broadcasting Started!");
+    Serial.println("CAN Sniffing Started!");
   }
 }
 
-// Function to package data into standard OBD-II format
-void sendOBDFrame(uint8_t pid, uint8_t dataA, uint8_t dataB) {
-  twai_message_t message;
-  message.identifier = 0x7E8; // 0x7E8 is the standard ID for Engine ECU responses
-  message.extd = 0;           
-  message.rtr = 0;
-  message.data_length_code = 8;
+void updateScreens() {
+  // --- SCREEN 1 (Channel 0): Main Dash ---
+  tcaselect(0);
+  display.clearDisplay();
   
-  message.data[0] = 4;        // Byte 0: Data length (4 bytes follow)
-  message.data[1] = 0x41;     // Byte 1: Mode 41 (Standard Success Response)
-  message.data[2] = pid;      // Byte 2: The requested PID
-  message.data[3] = dataA;    // Byte 3: Data A
-  message.data[4] = dataB;    // Byte 4: Data B
-  message.data[5] = 0x00;     // Padding
-  message.data[6] = 0x00;
-  message.data[7] = 0x00;
+  display.setCursor(0, 5);
+  display.setTextSize(3); 
+  display.print((uint32_t)valSpeed); 
+  display.setTextSize(1);
+  display.println(" MPH");
+  
+  display.setCursor(0, 40);
+  display.setTextSize(2);
+  display.print((uint32_t)valRPM); 
+  display.println(" RPM");
+  display.display();
 
-  twai_transmit(&message, pdMS_TO_TICKS(10));
+  // --- SCREEN 2 (Channel 1): The Segmented Boost Gauge ---
+  tcaselect(1);
+  display.clearDisplay();
+  
+  float boostPSI = (valMap - 101.325) * 0.145038;
+
+  // 1. Draw the segmented radial arc (-10 to 20 PSI)
+  int num_segments = 20; 
+  int active_segments = map(boostPSI, -10, 20, 0, num_segments);
+  active_segments = constrain(active_segments, 0, num_segments);
+
+  for (int i = 0; i < num_segments; i++) {
+    float angle = 3.14159 - (i * (3.14159 / (num_segments - 1)));
+    
+    int x_in = 64 + 42 * cos(angle);
+    int y_in = 58 - 42 * sin(angle);
+    int x_out = 64 + 56 * cos(angle);
+    int y_out = 58 - 56 * sin(angle);
+
+    if (i < active_segments) {
+      for(int w = -1; w <= 1; w++) {
+        display.drawLine(x_in + w, y_in, x_out + w, y_out, WHITE);
+        display.drawLine(x_in, y_in + w, x_out, y_out + w, WHITE);
+      }
+    } else {
+      display.drawLine(x_in, y_in, x_out, y_out, WHITE);
+    }
+  }
+
+  // 2. Draw the large centered digital readout
+  display.setTextSize(3);
+  if (boostPSI <= -10 || boostPSI >= 10) { display.setCursor(16, 20); } 
+  else if (boostPSI < 0) { display.setCursor(25, 20); }
+  else { display.setCursor(34, 20); }
+  display.print(boostPSI, 1);
+  
+  // 3. Draw the PSI label
+  display.setTextSize(1);
+  display.setCursor(55, 48);
+  display.print("PSI");
+  
+  display.display();
+
+  // --- SCREEN 3 (Channel 2): Refined Telemetry ---
+  tcaselect(2);
+  display.clearDisplay();
+  display.setTextSize(2);
+  
+  display.setCursor(0, 0);  display.print("LOD:"); display.print((int)valLoad); display.println("%");
+  display.setCursor(0, 22); display.print("FUL:"); display.print((int)valFuel); display.println("%");
+  display.setCursor(0, 44); display.print("BAT:"); display.print(valVolt, 1); display.println("V");
+  display.display();
 }
 
 void loop() {
-  // Use millis() to generate smooth sine waves for realistic sweeping gauges
-  float time = millis() / 1000.0;
+  // Update screens exactly 5 times a second
+  if (millis() - lastDisplayUpdate >= 200) {
+    updateScreens();
+    lastDisplayUpdate = millis();
+  }
+
+  // --- THE NEW NON-BLOCKING CAN SNIFFER ---
+  twai_message_t message;
   
-  // 1. RPM (0x0C): Formula = ((A * 256) + B) / 4
-  int simRPM = 3650 + 2850 * sin(time); // Sweeps 800 to 6500
-  int rpmA = (simRPM * 4) / 256;
-  int rpmB = (simRPM * 4) % 256;
-  
-  // 2. Speed (0x0D): Formula = A (in km/h)
-  int simSpeedKPH = 64 + 64 * sin(time * 0.5); // Sweeps 0 to 128 km/h (~80 MPH)
-  int speedA = simSpeedKPH;
+  // Check the CAN buffer as fast as the ESP32 loop can run
+  while (twai_receive(&message, 0) == ESP_OK) {
+    // If it's a standard OBD-II engine response (0x7E8) and Mode is 41 (Success)
+    if (message.identifier == 0x7E8 && message.data[1] == 0x41) {
+      uint8_t pid = message.data[2];
+      uint8_t A = message.data[3];
+      uint8_t B = message.data[4];
 
-  // 3. MAP/Boost (0x0B): Formula = A (in kPa)
-  int simMAP = 115 + 85 * sin(time * 1.5); // Sweeps 30 to 200 kPa
-  int mapA = simMAP;
-  
-  // 4. Engine Load (0x04): Formula = A * 100 / 255
-  int simLoad = 50 + 50 * sin(time * 0.8); // Sweeps 0 to 100%
-  int loadA = (simLoad * 255) / 100;
-
-  // 5. Throttle Position (0x11): Formula = A * 100 / 255
-  int simThrottle = 50 + 50 * sin(time * 0.8); // Sweeps 0 to 100%
-  int throttleA = (simThrottle * 255) / 100;
-
-  // 6. Coolant Temp (0x05): Formula = A - 40 (in Celsius)
-  int simCoolant = 90 + 10 * sin(time * 0.2); // Sweeps 80C to 100C
-  int coolantA = simCoolant + 40;
-
-  // 7. Intake Air Temp (0x0F): Formula = A - 40 (in Celsius)
-  int simIAT = 40 + 10 * sin(time * 0.3); // Sweeps 30C to 50C
-  int iatA = simIAT + 40;
-
-  // 8. Oil Temp (0x5C): Formula = A - 40 (in Celsius)
-  int simOil = 100 + 10 * sin(time * 0.2); // Sweeps 90C to 110C
-  int oilA = simOil + 40;
-
-  // 9. Fuel Level (0x2F): Formula = A * 100 / 255
-  int simFuel = 50 + 50 * sin(time * 0.05); // Very slow sweep 0 to 100%
-  int fuelA = (simFuel * 255) / 100;
-
-  // 10. Control Module Voltage (0x42): Formula = ((A * 256) + B) / 1000
-  float simVolt = 13.9 + 0.9 * sin(time * 0.1); // Sweeps 13.0V to 14.8V
-  int voltVal = (int)(simVolt * 1000);
-  int voltA = voltVal / 256;
-  int voltB = voltVal % 256;
-
-  // --- BROADCAST ALL FRAMES ---
-  sendOBDFrame(0x0C, rpmA, rpmB); 
-  delay(5);
-  sendOBDFrame(0x0D, speedA, 0);  
-  delay(5);
-  sendOBDFrame(0x0B, mapA, 0);    
-  delay(5);
-  sendOBDFrame(0x04, loadA, 0);   
-  delay(5);
-  sendOBDFrame(0x11, throttleA, 0);   
-  delay(5);
-  sendOBDFrame(0x05, coolantA, 0);   
-  delay(5);
-  sendOBDFrame(0x0F, iatA, 0);   
-  delay(5);
-  sendOBDFrame(0x5C, oilA, 0);   
-  delay(5);
-  sendOBDFrame(0x2F, fuelA, 0);   
-  delay(5);
-  sendOBDFrame(0x42, voltA, voltB);   
-  delay(5);
-  
-  // Entire loop takes ~50ms. We are flooding the bus at roughly 20Hz, 
-  // mirroring the constant chatter of a high-speed automotive CAN bus.
+      // Route the raw data bytes into standard car metrics
+      switch (pid) {
+        case 0x0C: valRPM = ((A * 256.0) + B) / 4.0; break;
+        case 0x0D: valSpeed = A * 0.621371; break; // Raw CAN is km/h, convert to MPH
+        case 0x0B: valMap = A; break;
+        case 0x04: valLoad = (A * 100.0) / 255.0; break;
+        case 0x2F: valFuel = (A * 100.0) / 255.0; break;
+        case 0x42: valVolt = ((A * 256.0) + B) / 1000.0; break;
+        case 0x11: valThrottle = (A * 100.0) / 255.0; break;
+        case 0x05: valCoolant = A - 40; break;
+        case 0x0F: valIAT = A - 40; break;
+        case 0x5C: valOil = A - 40; break;
+      }
+    }
+  }
 }
