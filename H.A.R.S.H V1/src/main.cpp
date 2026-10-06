@@ -173,7 +173,7 @@ void loop() {
           break;
         }
         case 5: {
-          float temp = myELM327.engineOilTemp();
+          float temp = myELM327.oilTemp();
           if (myELM327.nb_rx_state == ELM_SUCCESS) { valOil = temp; Serial.print("Oil Temp (C): "); Serial.println(valOil); slow_metric_step = 6; obd_state = STATE_RPM; } 
           else if (myELM327.nb_rx_state != ELM_GETTING_MSG) { slow_metric_step = 6; obd_state = STATE_RPM; }
           break;
